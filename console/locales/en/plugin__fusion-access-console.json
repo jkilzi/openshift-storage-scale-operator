@@ -14,7 +14,7 @@
   "Dashboard link": "Dashboard link",
   "Deleting": "Deleting",
   "Deletion blocked": "Deletion blocked",
-  "Failed to load LocalDisks": "Failed to load LocalDisks",
+  "Failed to load FileSystemClaims": "Failed to load FileSystemClaims",
   "Failed to load LocalVolumeDiscoveryResults": "Failed to load LocalVolumeDiscoveryResults",
   "Failed to load LocalVolumeDiscoveryResults for storage nodes": "Failed to load LocalVolumeDiscoveryResults for storage nodes",
   "Failed to load Nodes": "Failed to load Nodes",
