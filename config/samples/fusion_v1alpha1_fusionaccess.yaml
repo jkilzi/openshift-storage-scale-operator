@@ -5,4 +5,4 @@ metadata:
 spec:
   storageDeviceDiscovery:
     create: true
-  storageScaleVersion: "v5.2.3.5-2025.11.05.16.41.43"
+  storageScaleVersion: "v5.2.3.5-2025.11.12.15.46.01"
