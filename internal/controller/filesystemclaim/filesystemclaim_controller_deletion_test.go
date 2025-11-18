@@ -20,6 +20,7 @@ import (
 	"context"
 	"time"
 
+	snapshotv1 "github.com/kubernetes-csi/external-snapshotter/client/v8/apis/volumesnapshot/v1"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	fusionv1alpha1 "github.com/openshift-storage-scale/openshift-fusion-access-operator/api/v1alpha1"
@@ -49,6 +50,7 @@ var _ = Describe("FileSystemClaim Deletion Flow", func() {
 		scheme = runtime.NewScheme()
 		Expect(clientgoscheme.AddToScheme(scheme)).To(Succeed())
 		Expect(fusionv1alpha1.AddToScheme(scheme)).To(Succeed())
+		Expect(snapshotv1.AddToScheme(scheme)).To(Succeed())
 	})
 
 	Describe("markDeletionRequested", func() {
@@ -451,6 +453,191 @@ var _ = Describe("FileSystemClaim Deletion Flow", func() {
 		})
 	})
 
+	// Tests for deletion of VolumeSnapshotClass
+	Describe("deleteVolumeSnapshotClass", func() {
+		It("should delete VolumeSnapshotClass when it exists", func() {
+			fsc := &fusionv1alpha1.FileSystemClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-fsc",
+					Namespace: namespace,
+				},
+				Status: fusionv1alpha1.FileSystemClaimStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   fusionv1alpha1.ConditionTypeVolumeSnapshotClassCreated,
+							Status: metav1.ConditionTrue,
+							Reason: ReasonVolumeSnapshotClassCreationSucceeded,
+						},
+					},
+				},
+			}
+
+			vsc := buildVolumeSnapshotClass(ctx, fsc, fsc.Name)
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(fsc, vsc).
+				WithStatusSubresource(&fusionv1alpha1.FileSystemClaim{}).
+				Build()
+
+			reconciler := &FileSystemClaimReconciler{
+				Client: fakeClient,
+				Scheme: scheme,
+			}
+
+			changed, err := reconciler.deleteVolumeSnapshotClass(ctx, fsc)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(changed).To(BeTrue())
+
+			// Verify VSC is deleted
+			deleted := &unstructured.Unstructured{}
+			deleted.SetGroupVersionKind(schema.GroupVersionKind{
+				Group:   VolumeSnapshotClassGroup,
+				Version: VolumeSnapshotClassVersion,
+				Kind:    VolumeSnapshotClassKind,
+			})
+			err = fakeClient.Get(ctx, types.NamespacedName{Name: fsc.Name}, deleted)
+			Expect(err).To(HaveOccurred()) // Should be gone
+		})
+
+		It("should skip when VolumeSnapshotClassCreated already False", func() {
+			fsc := createTestFSC("test-fsc", namespace, nil, []metav1.Condition{
+				{
+					Type:   fusionv1alpha1.ConditionTypeVolumeSnapshotClassCreated,
+					Status: metav1.ConditionFalse,
+					Reason: ReasonVolumeSnapshotClassDeleted,
+				},
+			})
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(fsc).
+				Build()
+
+			reconciler := &FileSystemClaimReconciler{
+				Client: fakeClient,
+				Scheme: scheme,
+			}
+
+			changed, err := reconciler.deleteVolumeSnapshotClass(ctx, fsc)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(changed).To(BeFalse(), "should return false to allow deletion flow to proceed")
+		})
+
+		It("should return false when VolumeSnapshotClass was never created", func() {
+			// Case 1: VSC condition doesn't exist at all (never created)
+			fsc := createTestFSC("test-fsc", namespace, nil, []metav1.Condition{})
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(fsc).
+				Build()
+
+			reconciler := &FileSystemClaimReconciler{
+				Client: fakeClient,
+				Scheme: scheme,
+			}
+
+			changed, err := reconciler.deleteVolumeSnapshotClass(ctx, fsc)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(changed).To(BeFalse(), "should return false when VSC was never created to allow proceeding to StorageClass deletion")
+		})
+
+		It("should return true after updating condition when VSC not found but condition is True", func() {
+			// Case 4: VSC not found in cluster but condition shows as created
+			// This can happen if VSC was manually deleted or never actually created
+			fsc := &fusionv1alpha1.FileSystemClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-fsc",
+					Namespace:  namespace,
+					Generation: 1,
+				},
+				Status: fusionv1alpha1.FileSystemClaimStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:               fusionv1alpha1.ConditionTypeVolumeSnapshotClassCreated,
+							Status:             metav1.ConditionTrue,
+							Reason:             ReasonVolumeSnapshotClassCreationSucceeded,
+							ObservedGeneration: 1,
+						},
+					},
+				},
+			}
+
+			// No VSC in cluster - simulating manual deletion or failed creation
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(fsc).
+				WithStatusSubresource(&fusionv1alpha1.FileSystemClaim{}).
+				Build()
+
+			reconciler := &FileSystemClaimReconciler{
+				Client: fakeClient,
+				Scheme: scheme,
+			}
+
+			changed, err := reconciler.deleteVolumeSnapshotClass(ctx, fsc)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(changed).To(BeTrue(), "should return true after updating condition to trigger requeue")
+
+			// Verify condition was updated
+			updated := &fusionv1alpha1.FileSystemClaim{}
+			Expect(fakeClient.Get(ctx, types.NamespacedName{Name: fsc.Name, Namespace: fsc.Namespace}, updated)).To(Succeed())
+
+			cond := findCondition(updated.Status.Conditions, fusionv1alpha1.ConditionTypeVolumeSnapshotClassCreated)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal(ReasonVolumeSnapshotClassDeleted))
+		})
+
+		It("should return false on second call when condition already marked as deleted (idempotent)", func() {
+			// Case where VSC not found and condition already False (idempotent scenario)
+			fsc := &fusionv1alpha1.FileSystemClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-fsc",
+					Namespace:  namespace,
+					Generation: 1,
+				},
+				Status: fusionv1alpha1.FileSystemClaimStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:               fusionv1alpha1.ConditionTypeVolumeSnapshotClassCreated,
+							Status:             metav1.ConditionFalse,
+							Reason:             ReasonVolumeSnapshotClassDeleted,
+							Message:            "VolumeSnapshotClass deleted, proceeding with StorageClass deletion",
+							ObservedGeneration: 1,
+						},
+					},
+				},
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(fsc).
+				WithStatusSubresource(&fusionv1alpha1.FileSystemClaim{}).
+				Build()
+
+			reconciler := &FileSystemClaimReconciler{
+				Client: fakeClient,
+				Scheme: scheme,
+			}
+
+			// First call - VSC not found, condition shows True
+			fsc.Status.Conditions[0].Status = metav1.ConditionTrue
+			changed, err := reconciler.deleteVolumeSnapshotClass(ctx, fsc)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(changed).To(BeTrue(), "first call should return true to update condition")
+
+			// Get updated FSC
+			Expect(fakeClient.Get(ctx, types.NamespacedName{Name: fsc.Name, Namespace: fsc.Namespace}, fsc)).To(Succeed())
+
+			// Second call - condition now False (idempotent)
+			changed, err = reconciler.deleteVolumeSnapshotClass(ctx, fsc)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(changed).To(BeFalse(), "second call should return false (no change) to allow proceeding to next deletion step")
+		})
+	})
+
 	Describe("deleteStorageClass", func() {
 		It("should delete StorageClass when it exists", func() {
 			fsc := &fusionv1alpha1.FileSystemClaim{
@@ -638,7 +825,7 @@ var _ = Describe("FileSystemClaim Deletion Flow", func() {
 			requeueAfter, changed, err := reconciler.deleteFilesystem(ctx, fsc)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(changed).To(BeTrue())
-			Expect(requeueAfter).To(Equal(45 * time.Second))
+			Expect(requeueAfter).To(Equal(45*time.Second), "should return 45s wait time for backend cleanup (deletion watches disabled)")
 		})
 
 		It("should mark FileSystemCreated=False when FS already gone", func() {
@@ -720,7 +907,7 @@ var _ = Describe("FileSystemClaim Deletion Flow", func() {
 			requeueAfter, changed, err := reconciler.deleteLocalDisks(ctx, fsc)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(changed).To(BeTrue())
-			Expect(requeueAfter).To(Equal(30 * time.Second))
+			Expect(requeueAfter).To(Equal(30*time.Second), "should return 30s wait time for NSD cleanup (deletion watches disabled)")
 		})
 
 		It("should mark LocalDiskCreated=False when LDs already gone", func() {
