@@ -17,6 +17,7 @@ export const FileSystemClaimsCreateButton: React.FC<
         {...otherProps}
         isAriaDisabled={isDisabled || !vm.isDaemonHealthy}
         variant="primary"
+        isLoading={!vm.isDaemonHealthy}
         ref={vm.tooltip.ref}
       >
         {vm.text}
