@@ -5,6 +5,7 @@
   "{message}": "{message}",
   "An error occurred while creating resources": "An error occurred while creating resources",
   "At least {{MINIMUM_AMOUNT_OF_NODES_LITERAL}} nodes must be selected.": "At least {{MINIMUM_AMOUNT_OF_NODES_LITERAL}} nodes must be selected.",
+  "Can't create file system because there are no LUNs available.": "Can't create file system because there are no LUNs available.",
   "Cancel": "Cancel",
   "Capacity": "Capacity",
   "CPU": "CPU",

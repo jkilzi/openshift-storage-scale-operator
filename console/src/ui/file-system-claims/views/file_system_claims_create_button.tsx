@@ -17,15 +17,17 @@ export const FileSystemClaimsCreateButton: React.FC<
     <>
       <Button
         {...otherProps}
-        aria-describedby="create-file-system-tooltip"
-        isAriaDisabled={isDisabled || !vm.isDaemonHealthy}
+        aria-describedby={
+          vm.shouldShowTooltip ? "create-file-system-tooltip" : undefined
+        }
+        isAriaDisabled={isDisabled || vm.isButtonDisabled}
         variant="primary"
-        isLoading={isLoading || !vm.isDaemonHealthy}
+        isLoading={isLoading || vm.isButtonLoading}
         ref={vm.tooltip.ref}
       >
         {vm.text}
       </Button>
-      {!vm.isDaemonHealthy && (
+      {vm.shouldShowTooltip && (
         <Tooltip
           id={vm.tooltip.id}
           content={vm.tooltip.content}
