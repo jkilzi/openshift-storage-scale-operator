@@ -20,8 +20,8 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"strings"
 
+	"github.com/openshift-storage-scale/openshift-fusion-access-operator/internal/utils"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -62,7 +62,8 @@ func (v *FileSystemClaimValidator) ValidateCreate(_ context.Context, obj runtime
 
 	logger.Info("validate create", "name", fsc.Name, "namespace", fsc.Namespace, "devices", fsc.Spec.Devices)
 
-	if err := validateDevicesNotEmpty(fsc.Spec.Devices); err != nil {
+	// Validate device ID format, no duplicates, and non-empty (defense-in-depth)
+	if err := utils.ValidateDeviceIDs(fsc.Spec.Devices); err != nil {
 		return nil, err
 	}
 
@@ -100,7 +101,8 @@ func (v *FileSystemClaimValidator) ValidateUpdate(_ context.Context, oldObj, new
 		return nil, fmt.Errorf("spec.devices cannot be modified during deletion")
 	}
 
-	if err := validateDevicesNotEmpty(newFSC.Spec.Devices); err != nil {
+	// Validate device ID format, no duplicates, and non-empty (defense-in-depth)
+	if err := utils.ValidateDeviceIDs(newFSC.Spec.Devices); err != nil {
 		return nil, err
 	}
 
@@ -164,17 +166,4 @@ func convertToFileSystemClaim(obj runtime.Object) (*FileSystemClaim, error) {
 		return nil, fmt.Errorf("expected a FileSystemClaim object but got %T", obj)
 	}
 	return fsc, nil
-}
-
-// validateDevicesNotEmpty validates that the devices list is not empty and contains no blank/whitespace-only entries.
-func validateDevicesNotEmpty(devices []string) error {
-	if len(devices) == 0 {
-		return fmt.Errorf("spec.devices cannot be empty, at least one device must be specified")
-	}
-	for i, device := range devices {
-		if strings.TrimSpace(device) == "" {
-			return fmt.Errorf("spec.devices[%d] cannot be blank/empty, please provide a valid device path (e.g., /dev/nvme0n1)", i)
-		}
-	}
-	return nil
 }
